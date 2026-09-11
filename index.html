@@ -502,6 +502,10 @@
             <div class="field"><label for="f-location">Location / Bay</label><input id="f-location" type="text" placeholder="e.g. Bay 3"></div>
             <div class="field"><label for="f-equip">Equipment / Jib Ref</label><input id="f-equip" type="text" placeholder="e.g. OHC-04"></div>
           </div>
+          <div class="field">
+            <label for="f-certno">Certificate No. <span class="unit">(optional — leave blank to auto-number)</span></label>
+            <input id="f-certno" type="text" placeholder="Auto: KE-CB-0001">
+          </div>
           <div class="field-row">
             <div class="field"><label for="f-engineer">Engineer</label><input id="f-engineer" type="text" placeholder="Name"></div>
             <div class="field"><label for="f-date">Date of Test</label><input id="f-date" type="date"></div>
@@ -524,11 +528,12 @@
           </div>
 
           <div class="uprate-box">
-            <div class="section-label">Uprate / Downrate <span style="text-transform:none;letter-spacing:0;">(engineer's judgement — optional)</span></div>
+            <div class="section-label">Uprate / Downrate <span style="text-transform:none;letter-spacing:0;">(auto-suggested from deflection — override freely)</span></div>
             <div class="field-row">
               <div class="field"><label for="f-uprate">Uprated To <span class="unit">kg</span></label><input id="f-uprate" type="number" inputmode="decimal" placeholder="N/A"></div>
               <div class="field"><label for="f-downrate">Down Rated To <span class="unit">kg</span></label><input id="f-downrate" type="number" inputmode="decimal" placeholder="N/A"></div>
             </div>
+            <p class="hint" id="adjustHint">Enter beam length, deflection readings, SWL and test load to see a suggested figure here — it's filled in automatically but you can type over it any time.</p>
           </div>
         </div>
 
@@ -543,6 +548,7 @@
             <div class="readout-row"><span class="rlabel">Over / under tolerance</span><span class="rval" id="r-overunder">— mm</span></div>
             <div class="readout-row"><span class="rlabel">Required test load (125% SWL)</span><span class="rval" id="r-testreq">— kg</span></div>
             <div class="readout-row"><span class="rlabel">Residual deflection (post-test)</span><span class="rval" id="r-residual">— mm</span></div>
+            <div class="readout-row"><span class="rlabel">Extrapolated capacity (at tolerance)</span><span class="rval" id="r-extrap">— kg</span></div>
 
             <div class="gauge-wrap">
               <div class="gauge-track"><div class="gauge-fill" id="gaugeFill" style="width:0%;background:#8FA0AC;"></div></div>
@@ -585,6 +591,7 @@
 <div id="certOverlay">
   <div class="cert-toolbar">
     <button class="btn-close" id="closeCertBtn">Close</button>
+    <button class="btn-close" id="emailCertBtn">Email</button>
     <button class="btn-print" id="printCertBtn">Print / Save as PDF</button>
   </div>
   <div class="cert-sheet" id="certSheet"></div>
@@ -634,7 +641,10 @@
     testType: "crane",
     certificates: [],
     settings: { name:"Key Engineering (Chesterfield) Ltd", address:"Whitting Valley Road, Old Whittington, Chesterfield, S41 9EY", phone:"01246 413 524", email:"info@keyengineeringltd.co.uk" },
-    counters: { crane:0, jib:0 }
+    counters: { crane:0, jib:0 },
+    autoUprate: null,
+    autoDownrate: null,
+    currentCert: null
   };
 
   var els = {};
@@ -659,7 +669,7 @@
     els.typeBtns = document.querySelectorAll(".type-btn");
     els.plateTitle = document.getElementById("plateTitle");
 
-    ["site","location","equip","engineer","date","beam","noload","withload","afterload","swl","testload","uprate","downrate"].forEach(function(id){
+    ["site","location","equip","certno","engineer","date","beam","noload","withload","afterload","swl","testload","uprate","downrate"].forEach(function(id){
       els["f_"+id] = document.getElementById("f-"+id);
     });
 
@@ -668,6 +678,8 @@
     els.rOverUnder = document.getElementById("r-overunder");
     els.rTestReq = document.getElementById("r-testreq");
     els.rResidual = document.getElementById("r-residual");
+    els.rExtrap = document.getElementById("r-extrap");
+    els.adjustHint = document.getElementById("adjustHint");
     els.gaugeFill = document.getElementById("gaugeFill");
     els.gaugeMax = document.getElementById("gaugeMax");
     els.liveStamp = document.getElementById("liveStamp");
@@ -680,6 +692,7 @@
     els.certSheet = document.getElementById("certSheet");
     els.closeCertBtn = document.getElementById("closeCertBtn");
     els.printCertBtn = document.getElementById("printCertBtn");
+    els.emailCertBtn = document.getElementById("emailCertBtn");
 
     els.storeSearch = document.getElementById("storeSearch");
     els.storeFilterType = document.getElementById("storeFilterType");
@@ -737,6 +750,7 @@
 
     els.closeCertBtn.addEventListener("click", function(){ els.certOverlay.classList.remove("open"); });
     els.printCertBtn.addEventListener("click", function(){ window.print(); });
+    els.emailCertBtn.addEventListener("click", function(){ emailCertificate(state.currentCert); });
     els.certOverlay.addEventListener("click", function(e){ if(e.target === els.certOverlay) els.certOverlay.classList.remove("open"); });
 
     els.storeSearch.addEventListener("input", renderStore);
@@ -802,10 +816,25 @@
     var pass = overUnder <= 0;
     var loadShortfall = hasValue(els.f_testload) && hasValue(els.f_swl) && testLoad < testLoadRequired;
 
+    // Extrapolated capacity: assumes deflection scales linearly with load (elastic beam
+    // behaviour). Scales the applied test load by (tolerance / measured deflection) to find
+    // the load that would produce exactly the permitted tolerance, then divides by 1.25 to
+    // convert that back from a test load to an equivalent SWL. This is a starting-point
+    // suggestion only — final uprate/downrate figures remain the examining engineer's call.
+    var suggestedCapacity = null;
+    var adjustMode = null;
+    var haveAdjustInputs = beam > 0 && testLoad > 0 && swl > 0 && deflection > 0 && tolerance > 0;
+    if(haveAdjustInputs){
+      var extrapolatedTestLoad = testLoad * (tolerance / deflection);
+      suggestedCapacity = extrapolatedTestLoad / 1.25;
+      adjustMode = pass ? "uprate" : "downrate";
+    }
+
     return {
       beam:beam, noLoad:noLoad, withLoad:withLoad, afterTest:afterTest, swl:swl, testLoad:testLoad,
       tolerance:tolerance, deflection:deflection, overUnder:overUnder,
-      testLoadRequired:testLoadRequired, residual:residual, pass:pass, loadShortfall:loadShortfall
+      testLoadRequired:testLoadRequired, residual:residual, pass:pass, loadShortfall:loadShortfall,
+      suggestedCapacity:suggestedCapacity, adjustMode:adjustMode
     };
   }
 
@@ -822,6 +851,9 @@
     els.rOverUnder.className = "rval" + (r.overUnder > 0 ? " warn-val" : "");
     els.rTestReq.textContent = fmt(r.testLoadRequired) + " kg";
     els.rResidual.textContent = fmt(r.residual) + " mm";
+    els.rExtrap.textContent = r.suggestedCapacity !== null ? fmt(r.suggestedCapacity) + " kg" : "— kg";
+
+    applyAdjustSuggestion(r);
 
     var pct = r.tolerance > 0 ? Math.min(100, Math.max(0, (r.deflection / r.tolerance) * 100)) : 0;
     els.gaugeFill.style.width = pct + "%";
@@ -845,10 +877,40 @@
     }
   }
 
+  function applyAdjustSuggestion(r){
+    var suggestion = r.suggestedCapacity !== null ? String(Math.round(r.suggestedCapacity)) : null;
+
+    if(r.adjustMode === "uprate" && suggestion !== null){
+      if(els.f_uprate.value === "" || els.f_uprate.value === state.autoUprate){
+        els.f_uprate.value = suggestion;
+        state.autoUprate = suggestion;
+      }
+      if(els.f_downrate.value !== "" && els.f_downrate.value === state.autoDownrate){
+        els.f_downrate.value = "";
+      }
+      state.autoDownrate = null;
+      els.adjustHint.textContent = "Suggested uprate based on the measured deflection vs. tolerance — a rough starting point only. Confirm before certifying.";
+    } else if(r.adjustMode === "downrate" && suggestion !== null){
+      if(els.f_downrate.value === "" || els.f_downrate.value === state.autoDownrate){
+        els.f_downrate.value = suggestion;
+        state.autoDownrate = suggestion;
+      }
+      if(els.f_uprate.value !== "" && els.f_uprate.value === state.autoUprate){
+        els.f_uprate.value = "";
+      }
+      state.autoUprate = null;
+      els.adjustHint.textContent = "Test exceeded tolerance — suggested down-rated capacity shown, based on the measured deflection. Confirm before certifying.";
+    } else {
+      els.adjustHint.textContent = "Enter beam length, deflection readings, SWL and test load to see a suggested figure here — it's filled in automatically but you can type over it any time.";
+    }
+  }
+
   function resetForm(){
-    ["site","location","equip","engineer","beam","noload","withload","afterload","swl","testload","uprate","downrate"].forEach(function(id){
+    ["site","location","equip","certno","engineer","beam","noload","withload","afterload","swl","testload","uprate","downrate"].forEach(function(id){
       els["f_"+id].value = "";
     });
+    state.autoUprate = null;
+    state.autoDownrate = null;
     setDefaultDate();
     recalc();
   }
@@ -870,7 +932,8 @@
       if(!confirm("Site and Equipment/Jib reference are both blank. Save anyway?")) return;
     }
     els.saveCertBtn.disabled = true;
-    var certNo = await nextCertNumber();
+    var customCertNo = els.f_certno.value.trim();
+    var certNo = customCertNo || await nextCertNumber();
 
     var cert = {
       id: Date.now() + "-" + Math.random().toString(36).slice(2,8),
@@ -940,22 +1003,24 @@
         '<div class="cert-row"><span class="l">Date of Test</span><span class="v">'+displayDate(cert.date)+'</span></div>' +
         '<div class="cert-row"><span class="l">Engineer</span><span class="v">'+esc(cert.engineer||"—")+'</span></div>' +
         '<div class="cert-row"><span class="l">Certificate Issued</span><span class="v">'+displayDate(cert.savedAt.slice(0,10))+'</span></div>' +
+        '<div class="cert-row"><span class="l">Safe Working Load</span><span class="v">'+fmt(r.swl)+' kg</span></div>' +
+        '<div class="cert-row"><span class="l">Test Load Applied</span><span class="v">'+fmt(r.testLoad)+' kg</span></div>' +
       '</div>' +
 
       '<table class="cert-table"><thead><tr><th>Measurement</th><th class="num">mm</th></tr></thead><tbody>' +
-        '<tr><td>Beam length</td><td class="num">'+fmt(r.beam)+'</td></tr>' +
-        '<tr><td>Deflection — no load</td><td class="num">'+fmt(r.noLoad)+'</td></tr>' +
-        '<tr><td>Deflection — with load</td><td class="num">'+fmt(r.withLoad)+'</td></tr>' +
-        '<tr><td>Deflection — after test</td><td class="num">'+fmt(r.afterTest)+'</td></tr>' +
-        '<tr><td>Measured deflection under load</td><td class="num">'+fmt(r.deflection)+'</td></tr>' +
-        '<tr><td>Permitted tolerance</td><td class="num">'+fmt(r.tolerance)+'</td></tr>' +
-        '<tr><td>Residual deflection (post-test vs no-load)</td><td class="num">'+fmt(r.residual)+'</td></tr>' +
+        '<tr><td>Beam length</td><td class="num">'+fmt(r.beam)+' mm</td></tr>' +
+        '<tr><td>Deflection — no load</td><td class="num">'+fmt(r.noLoad)+' mm</td></tr>' +
+        '<tr><td>Deflection — with load</td><td class="num">'+fmt(r.withLoad)+' mm</td></tr>' +
+        '<tr><td>Deflection — after test</td><td class="num">'+fmt(r.afterTest)+' mm</td></tr>' +
+        '<tr><td>Measured deflection under load</td><td class="num">'+fmt(r.deflection)+' mm</td></tr>' +
+        '<tr><td>Permitted tolerance</td><td class="num">'+fmt(r.tolerance)+' mm</td></tr>' +
+        '<tr><td>Residual deflection (post-test vs no-load)</td><td class="num">'+fmt(r.residual)+' mm</td></tr>' +
       '</tbody></table>' +
 
       '<table class="cert-table"><thead><tr><th>Load</th><th class="num">kg</th></tr></thead><tbody>' +
-        '<tr><td>Safe Working Load (SWL)</td><td class="num">'+fmt(r.swl)+'</td></tr>' +
-        '<tr><td>Required test load (125% SWL)</td><td class="num">'+fmt(r.testLoadRequired)+'</td></tr>' +
-        '<tr><td>Test load applied</td><td class="num">'+fmt(r.testLoad)+'</td></tr>' +
+        '<tr><td>Safe Working Load (SWL)</td><td class="num">'+fmt(r.swl)+' kg</td></tr>' +
+        '<tr><td>Required test load (125% SWL)</td><td class="num">'+fmt(r.testLoadRequired)+' kg</td></tr>' +
+        '<tr><td>Test load applied</td><td class="num">'+fmt(r.testLoad)+' kg</td></tr>' +
       '</tbody></table>' +
       loadWarnHtml +
 
@@ -979,6 +1044,34 @@
 
     els.certSheet.innerHTML = html;
     els.certOverlay.classList.add("open");
+    state.currentCert = cert;
+  }
+
+  function emailCertificate(cert){
+    if(!cert) return;
+    var r = cert.results;
+    var subject = "Load Test Certificate " + cert.certNo + " — " + (cert.equip || cert.site || "");
+    var lines = [
+      "Certificate No: " + cert.certNo,
+      "Test type: " + certTypeLabel(cert.testType),
+      "Site: " + (cert.site || "—"),
+      "Location: " + (cert.location || "—"),
+      "Equipment / Jib Ref: " + (cert.equip || "—"),
+      "Date of test: " + displayDate(cert.date),
+      "Engineer: " + (cert.engineer || "—"),
+      "",
+      "Safe Working Load: " + fmt(r.swl) + " kg",
+      "Test load applied: " + fmt(r.testLoad) + " kg",
+      "Measured deflection under load: " + fmt(r.deflection) + " mm",
+      "Permitted tolerance: " + fmt(r.tolerance) + " mm",
+      "Result: " + (r.pass ? "PASS" : "FAIL"),
+    ];
+    if(cert.uprate) lines.push("Uprated to: " + cert.uprate + " kg");
+    if(cert.downrate) lines.push("Down rated to: " + cert.downrate + " kg");
+    lines.push("", "Note: the full certificate PDF is not attached automatically — use \"Print / Save as PDF\" on this certificate and attach it to this email before sending.");
+    var body = lines.join("\n");
+    var mailto = "mailto:?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
   }
 
   function esc(str){
