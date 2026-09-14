@@ -364,7 +364,7 @@
   #certOverlay.open{display:block;}
   .cert-toolbar{
     max-width:760px;margin:0 auto 14px;
-    display:flex;justify-content:flex-end;gap:10px;
+    display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;
   }
   .cert-toolbar button{
     font-family:'Inter',sans-serif;
@@ -459,14 +459,38 @@
 
   /* ---------- Print ---------- */
   @media print{
-    body *{visibility:hidden;}
-    #certOverlay, #certOverlay *{visibility:visible;}
-    #certOverlay{position:static;background:#fff;padding:0;inset:auto;overflow:visible;}
-    .cert-toolbar{display:none;}
-    .cert-sheet{box-shadow:none;max-width:100%;padding:10mm 12mm;border-top:5px solid var(--orange);}
-    @page{size:A4;margin:8mm;}
+    #app, #settingsOverlay{ display:none !important; }
+    .toast{ display:none !important; }
+    #certOverlay{
+      display:block !important;
+      position:static !important;
+      background:#fff;
+      padding:0;
+      inset:auto;
+      overflow:visible;
+    }
+    .cert-toolbar{display:none !important;}
+    .cert-sheet{
+      box-shadow:none;
+      max-width:100%;
+      margin:0;
+      padding:6mm 10mm;
+      border-top:4px solid var(--orange);
+    }
+    .cert-row{padding:3px 0;font-size:12px;}
+    table.cert-table{margin:8px 0;font-size:12px;}
+    table.cert-table td, table.cert-table th{padding:4px 6px;}
+    .cert-head{margin-bottom:10px;}
+    .cert-title h2{font-size:22px;}
+    hr.rule{margin:10px 0;}
+    .result-strip{margin:10px 0;padding:10px 14px;}
+    .sign-grid{margin-top:20px;}
+    .cert-footer{margin-top:16px;padding-top:8px;}
+    @page{size:A4;margin:6mm;}
   }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
 <div id="app">
@@ -592,7 +616,8 @@
   <div class="cert-toolbar">
     <button class="btn-close" id="closeCertBtn">Close</button>
     <button class="btn-close" id="emailCertBtn">Email</button>
-    <button class="btn-print" id="printCertBtn">Print / Save as PDF</button>
+    <button class="btn-close" id="downloadPdfBtn">Download PDF</button>
+    <button class="btn-print" id="printCertBtn">Print</button>
   </div>
   <div class="cert-sheet" id="certSheet"></div>
 </div>
@@ -693,6 +718,7 @@
     els.closeCertBtn = document.getElementById("closeCertBtn");
     els.printCertBtn = document.getElementById("printCertBtn");
     els.emailCertBtn = document.getElementById("emailCertBtn");
+    els.downloadPdfBtn = document.getElementById("downloadPdfBtn");
 
     els.storeSearch = document.getElementById("storeSearch");
     els.storeFilterType = document.getElementById("storeFilterType");
@@ -751,6 +777,7 @@
     els.closeCertBtn.addEventListener("click", function(){ els.certOverlay.classList.remove("open"); });
     els.printCertBtn.addEventListener("click", function(){ window.print(); });
     els.emailCertBtn.addEventListener("click", function(){ emailCertificate(state.currentCert); });
+    els.downloadPdfBtn.addEventListener("click", downloadCertificatePdf);
     els.certOverlay.addEventListener("click", function(e){ if(e.target === els.certOverlay) els.certOverlay.classList.remove("open"); });
 
     els.storeSearch.addEventListener("input", renderStore);
@@ -1045,6 +1072,41 @@
     els.certSheet.innerHTML = html;
     els.certOverlay.classList.add("open");
     state.currentCert = cert;
+  }
+
+  async function downloadCertificatePdf(){
+    if(!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)){
+      alert("The PDF generator didn't load (probably no internet connection). Use Print instead \u2014 its dialog has a \u201cSave as PDF\u201d destination option.");
+      return;
+    }
+    var cert = state.currentCert;
+    els.downloadPdfBtn.disabled = true;
+    var originalLabel = els.downloadPdfBtn.textContent;
+    els.downloadPdfBtn.textContent = "Preparing\u2026";
+    try{
+      var canvas = await window.html2canvas(els.certSheet, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+      var imgData = canvas.toDataURL("image/png");
+      var jsPDF = window.jspdf.jsPDF;
+      var pdf = new jsPDF("p", "mm", "a4");
+      var pageWidth = pdf.internal.pageSize.getWidth();
+      var pageHeight = pdf.internal.pageSize.getHeight();
+      var imgWidth = pageWidth;
+      var imgHeight = (canvas.height * imgWidth) / canvas.width;
+      if(imgHeight > pageHeight){
+        imgHeight = pageHeight;
+        imgWidth = (canvas.width * imgHeight) / canvas.height;
+      }
+      var x = (pageWidth - imgWidth) / 2;
+      var y = 0;
+      pdf.addImage(imgData, "PNG", x, y, imgWidth, imgHeight);
+      pdf.save((cert ? cert.certNo : "certificate") + ".pdf");
+    }catch(e){
+      console.error("PDF generation failed", e);
+      alert("Couldn't generate the PDF. Use Print instead \u2014 its dialog has a \u201cSave as PDF\u201d destination option.");
+    }finally{
+      els.downloadPdfBtn.disabled = false;
+      els.downloadPdfBtn.textContent = originalLabel;
+    }
   }
 
   function emailCertificate(cert){
